@@ -69,7 +69,7 @@ class DataCache:
             self.logger.error(f"Failed to retrieve cached DataFrame dict: {str(e)}")
             return {view_id: None for view_id in view_ids}
 
-class RedisCache(DataCache):
+class RedisCache:
     """Redis-based cache implementation."""
 
     def __init__(self, redis_url: str = "redis://localhost:6379/0"):
@@ -88,7 +88,7 @@ class RedisCache(DataCache):
     def get(self, key: str) -> Optional[str]:
         return self.client.get(key)
 
-class FileCache(DataCache):
+class FileCache:
     """File-based cache implementation."""
 
     def __init__(self, cache_dir: str):
