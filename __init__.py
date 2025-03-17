@@ -1,105 +1,60 @@
-import logging
+from flask import Blueprint, render_template, request
 import pandas as pd
-from typing import List, Optional, Dict
-from App.tableau_client import TableauClient
+from App.models import KPIs, DataCache, FileCache
 from App.utils import Utils
-import os
-import json
+from App import config
+from App.tableau_client import TableauClient
+from App.models import DataFetcher
 
-logger = logging.getLogger(__name__)
+main_bp = Blueprint('main', __name__)
 
-class KPIs:
-    """Compute Key Performance Indicators from DataFrames."""
+@main_bp.route('/', methods=['GET', 'POST'])
+def index():
+    # Initialize file-based cache
+    cache = FileCache(config.CACHE_DIR)
+    data_cache = DataCache(cache)
 
-    def __init__(self) -> None:
-        pass
+    # Retrieve cached data
+    df_dict = data_cache.get_data_dict(config.CACHE_KEY, config.views)
 
-    @staticmethod
-    def get_value_counts(df: pd.DataFrame, column: str, normalize: bool = True) -> pd.Series:
-        """Calculate value counts for a column."""
-        return df[column].value_counts(normalize=normalize)
+    # Identify missing views
+    missing_views = [vid for vid, df in df_dict.items() if df is None]
 
-    @staticmethod
-    def create_pivot(data: pd.DataFrame, index: str, columns: str, values: str, aggfunc: str = "count") -> pd.DataFrame:
-        """Create a pivot table with grand totals."""
-        pivot_table = pd.pivot_table(
-            data,
-            index=index,
-            columns=columns,
-            values=values,
-            aggfunc=aggfunc,
-            fill_value=0,
+    if missing_views:
+        # Fetch missing data synchronously
+        tableau_client = TableauClient(
+            config.TABLEAU_TOKEN_NAME,
+            config.TABLEAU_TOKEN_VALUE,
+            config.TABLEAU_SITE_ID,
+            config.TABLEAU_SERVER_URL
         )
-        pivot_table["Grand Total"] = pivot_table.sum(axis=1)
-        grand_total = pd.DataFrame(pivot_table.sum(axis=0)).T
-        grand_total.name = "Grand Total"
-        grand_total = grand_total.to_frame().T
-        return pd.concat([pivot_table, grand_total])
+        fetcher = DataFetcher(tableau_client)
+        missing_df_dict = fetcher.fetch_data(missing_views)
+        # Cache the newly fetched data
+        data_cache.set_data_dict(config.CACHE_KEY, missing_df_dict, ttl=config.CACHE_TIMEOUT)
+        # Update df_dict with fetched data
+        for vid, df in missing_df_dict.items():
+            df_dict[vid] = df
 
-class DataCache:
-    """Manage caching with a specified backend."""
+    # Handle filters from the form
+    filters = request.form.getlist('filters') if request.method == 'POST' else []
+    kpi_instance = KPIs()
 
-    def __init__(self, cache_backend):
-        self.cache = cache_backend
-        self.logger = logging.getLogger(__name__)
+    # Compute metrics in parallel
+    metrics = {}
+    tasks = []
+    for view_id, df in df_dict.items():
+        if df is not None and isinstance(df, pd.DataFrame):
+            if filters:
+                df = df[df.get('category', pd.Series()).isin(filters)]  # Apply filters safely
+            tasks.append(lambda vid=view_id, d=df.copy(): {
+                'value_counts': kpi_instance.get_value_counts(d, 'category'),
+                'pivot_table': kpi_instance.create_pivot(d, 'date', 'category', 'value')
+            })
 
-    def set_data_dict(self, base_key: str, df_dict: Dict[str, pd.DataFrame], ttl: int = 3600) -> None:
-        """Store a dictionary of DataFrames in the cache."""
-        try:
-            for view_id, df in df_dict.items():
-                if df is not None:
-                    key = f"{base_key}:{view_id}"
-                    value = df.to_json(orient="records")
-                    self.cache.set(key, value, ttl=ttl)
-            self.logger.info(f"Cached {len(df_dict)} DataFrames with base key: {base_key}")
-        except Exception as e:
-            self.logger.error(f"Failed to cache DataFrame dict: {str(e)}")
-            raise
+    # Execute tasks in parallel
+    metric_results = Utils.run_parallel_tasks(tasks)
+    for view_id, result in zip([vid for vid, df in df_dict.items() if df is not None and isinstance(df, pd.DataFrame)], metric_results):
+        metrics[view_id] = result
 
-    def get_data_dict(self, base_key: str, view_ids: List[str]) -> Dict[str, Optional[pd.DataFrame]]:
-        """Retrieve a dictionary of DataFrames from the cache."""
-        df_dict = {}
-        try:
-            for view_id in view_ids:
-                key = f"{base_key}:{view_id}"
-                data = self.cache.get(key)
-                df_dict[view_id] = pd.read_json(data, orient="records") if data else None
-                self.logger.debug(f"Cache lookup for {key}: {'hit' if data else 'miss'}")
-            return df_dict
-        except Exception as e:
-            self.logger.error(f"Failed to retrieve cached DataFrame dict: {str(e)}")
-            return {view_id: None for view_id in view_ids}
-
-class FileCache:
-    """File-based caching implementation."""
-
-    def __init__(self, cache_dir: str):
-        self.cache_dir = cache_dir
-        if not os.path.exists(cache_dir):
-            os.makedirs(cache_dir)
-            logger.info(f"Created cache directory: {cache_dir}")
-
-    def set(self, key: str, value: str, ttl: int) -> None:
-        """Store a value in a file."""
-        file_path = os.path.join(self.cache_dir, f"{key}.json")
-        with open(file_path, 'w') as f:
-            f.write(value)
-
-    def get(self, key: str) -> Optional[str]:
-        """Retrieve a value from a file."""
-        file_path = os.path.join(self.cache_dir, f"{key}.json")
-        if os.path.exists(file_path):
-            with open(file_path, 'r') as f:
-                return f.read()
-        return None
-
-class DataFetcher:
-    """Fetch data from Tableau server."""
-
-    def __init__(self, tableau_client: TableauClient):
-        self.tableau_client = tableau_client
-
-    def fetch_data(self, view_ids: List[str]) -> Dict[str, pd.DataFrame]:
-        """Fetch data from specified Tableau views in parallel."""
-        results = Utils.run_parallel_view_fetch(self.tableau_client, view_ids)
-        return {vid: df for vid, df in results.items() if isinstance(df, pd.DataFrame)}
+    return render_template('index.html', metrics=metrics, filters=filters, available_filters=['filter1', 'filter2', 'filter3'])
