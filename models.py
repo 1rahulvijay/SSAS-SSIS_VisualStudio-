@@ -46,9 +46,10 @@ class DataCache:
         """Store a dictionary of DataFrames in the cache."""
         try:
             for view_id, df in df_dict.items():
-                key = f"{base_key}:{view_id}"
-                value = df.to_json(orient="records")
-                self.cache.set(key, value, ttl=ttl)
+                if df is not None:
+                    key = f"{base_key}:{view_id}"
+                    value = df.to_json(orient="records")
+                    self.cache.set(key, value, ttl=ttl)
             self.logger.info(f"Cached {len(df_dict)} DataFrames with base key: {base_key}")
         except Exception as e:
             self.logger.error(f"Failed to cache DataFrame dict: {str(e)}")
@@ -71,10 +72,10 @@ class DataCache:
 class RedisCache(DataCache):
     """Redis-based cache implementation."""
 
-    def __init__(self, redis_url: str = "redis://redis:6379/0"):
+    def __init__(self, redis_url: str = "redis://localhost:6379/0"):
         import redis
-        self.client = redis.Redis.from_url(redis_url)
         try:
+            self.client = redis.Redis.from_url(redis_url, decode_responses=True)
             self.client.ping()
             logger.info("Connected to Redis")
         except redis.RedisError as e:
@@ -90,7 +91,7 @@ class RedisCache(DataCache):
 class FileCache(DataCache):
     """File-based cache implementation."""
 
-    def __init__(self, cache_dir: str = os.path.join(os.path.dirname(__file__), "../cache")):
+    def __init__(self, cache_dir: str):
         self.cache_dir = cache_dir
         if not os.path.exists(cache_dir):
             os.makedirs(cache_dir)
