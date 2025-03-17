@@ -2,12 +2,17 @@ from flask import Blueprint, render_template, request
 from App.models import KPIs, DataCache, RedisCache, FileCache
 from App.utils import Utils
 from App import config
+from App.tasks import fetch_and_cache_data
 
 main_bp = Blueprint('main', __name__)
 
 @main_bp.route('/', methods=['GET', 'POST'])
 def index():
-    cache = RedisCache(config.REDIS_URL) if config.PREFER_REDIS else FileCache(config.CACHE_DIR)
+    try:
+        cache = RedisCache(config.REDIS_URL)
+    except Exception as e:
+        print(f"Redis connection failed: {str(e)}. Falling back to FileCache.")
+        cache = FileCache(config.CACHE_DIR)
     data_cache = DataCache(cache)
 
     # Retrieve cached data
@@ -31,11 +36,15 @@ def index():
 
     # Execute tasks in parallel
     metric_results = Utils.run_parallel_tasks(tasks)
-    for view_id, result in zip(config.views, metric_results):
+    for view_id, result in zip([vid for vid, df in df_dict.items() if df is not None and isinstance(df, pd.DataFrame)], metric_results):
         metrics[view_id] = result
 
     # Trigger background data fetch if cache is empty
-    if all(df is None or not isinstance(df, pd.DataFrame) for df in df_dict.values()):
-        fetch_and_cache_data.delay()
+    if not any(isinstance(df, pd.DataFrame) for df in df_dict.values()):
+        try:
+            fetch_and_cache_data.delay()
+            print("Triggered background data fetch.")
+        except Exception as e:
+            print(f"Failed to trigger background data fetch: {str(e)}")
 
     return render_template('index.html', metrics=metrics, filters=filters, available_filters=['filter1', 'filter2', 'filter3'])
