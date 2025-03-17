@@ -17,12 +17,16 @@ def fetch_and_cache_data(self, source: str = "tableau", view_ids: List[str] = No
         Utils.setup_logging(config.LOG_LEVEL)
         try:
             tableau_client = TableauClient(
-                config.args["NAME"],
-                config.args["TOKEN"],
-                config.args["SITE"],
-                config.args["SERVER"]
+                config.TABLEAU_TOKEN_NAME,
+                config.TABLEAU_TOKEN_VALUE,
+                config.TABLEAU_SITE_ID,
+                config.TABLEAU_SERVER_URL
             )
-            cache = RedisCache(config.REDIS_URL) if config.PREFER_REDIS else FileCache(config.CACHE_DIR)
+            try:
+                cache = RedisCache(config.REDIS_URL)
+            except Exception as e:
+                logger.warning(f"Redis connection failed: {str(e)}. Falling back to FileCache.")
+                cache = FileCache(config.CACHE_DIR)
             data_cache = DataCache(cache)
             fetcher = DataFetcher(tableau_client)
             df_dict = fetcher.fetch_data(view_ids)
