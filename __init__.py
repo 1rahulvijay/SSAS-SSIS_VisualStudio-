@@ -3,6 +3,7 @@ from celery import Celery
 import os
 from App import config
 from App.utils import Utils
+import logging
 
 # Global variables
 celery = None
@@ -23,6 +24,7 @@ def make_celery(app: Flask) -> Celery:
             with app.app_context():
                 return self.run(*args, **kwargs)
     celery.Task = ContextTask
+    logging.info("Celery initialized successfully.")
     return celery
 
 def create_app(config_class=config.ProductionConfig) -> Flask:
@@ -37,6 +39,9 @@ def create_app(config_class=config.ProductionConfig) -> Flask:
     # Register blueprints
     from .routes import main_bp
     app.register_blueprint(main_bp)
+
+    # Import tasks to ensure they are registered with Celery
+    from .tasks import fetch_and_cache_data
 
     # Setup logging
     Utils.setup_logging(config_class.LOG_LEVEL)
